@@ -1,0 +1,27 @@
+{
+  "name": "@wisent-ai/email-sequencing-cli",
+  "version": "0.1.0",
+  "description": "Local-first email sequence planning and execution-state CLI",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wisent-ai/email-sequencing-cli.git"
+  },
+  "bin": {
+    "email-sequencing": "./src/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
