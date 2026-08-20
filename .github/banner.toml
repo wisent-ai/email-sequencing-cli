@@ -1,11 +1,13 @@
 [automation]
 managed = true
-source_fingerprint = "6c169e6d97ccc6a4"
+source_fingerprint = "b4ca9f53c7f81932"
 category = "developer"
+copy_status = "missing"
+approved_in = ""
 
 [banner]
-title = "Email Sequencing CLI builds. You ship faster."
-description = "Local-first email sequence planning and execution-state CLI"
+title = "Email Sequencing CLI"
+description = ""
 product = "Wisent"
 url = "wisent.com"
 theme = "dark"
