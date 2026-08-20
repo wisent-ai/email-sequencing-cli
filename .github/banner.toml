@@ -1,0 +1,15 @@
+[automation]
+managed = true
+source_fingerprint = "6c169e6d97ccc6a4"
+category = "developer"
+
+[banner]
+title = "Email Sequencing CLI builds. You ship faster."
+description = "Local-first email sequence planning and execution-state CLI"
+product = "Wisent"
+url = "wisent.com"
+theme = "dark"
+layout = "signal-left"
+art_seed = "email-sequencing-cli"
+width = 1584
+height = 396
