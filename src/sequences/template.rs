@@ -27,35 +27,41 @@ fn display_value(value: &Value) -> String {
     }
 }
 
+/// The delimiters a template variable is written between.
+const OPEN: &str = "{{";
+const CLOSE: &str = "}}";
+
 pub fn render_template(template: &str, variables: &Map<String, Value>) -> Result<RenderedTemplate> {
     let template = required(template, "template")?;
     let mut text = String::with_capacity(template.len());
     let mut missing = BTreeSet::new();
-    let mut cursor = 0;
-    while let Some(relative_start) = template[cursor..].find("{{") {
-        let start = cursor + relative_start;
-        text.push_str(&template[cursor..start]);
-        let Some(relative_end) = template[start + 2..].find("}}") else {
-            text.push_str(&template[start..]);
-            cursor = template.len();
-            break;
+    let mut rest: &str = &template;
+    while let Some((before, opened)) = rest.split_once(OPEN) {
+        text.push_str(before);
+        // An opening delimiter no closing one follows is text, kept as written;
+        // no later opening delimiter is closed either, so the rest stays text.
+        let Some((inner, after)) = opened.split_once(CLOSE) else {
+            text.push_str(OPEN);
+            rest = opened;
+            continue;
         };
-        let end = start + 2 + relative_end;
-        let key = template[start + 2..end].trim();
+        let key = inner.trim();
         let valid = !key.is_empty()
             && key
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character));
         if !valid {
-            text.push_str(&template[start..end + 2]);
+            text.push_str(OPEN);
+            text.push_str(inner);
+            text.push_str(CLOSE);
         } else if let Some(value) = lookup(variables, key).filter(|value| !value.is_null()) {
             text.push_str(&display_value(value));
         } else {
             missing.insert(key.to_owned());
         }
-        cursor = end + 2;
+        rest = after;
     }
-    text.push_str(&template[cursor..]);
+    text.push_str(rest);
     Ok(RenderedTemplate {
         text,
         missing: missing.into_iter().collect(),
