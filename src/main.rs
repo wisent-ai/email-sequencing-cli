@@ -1,84 +1,18 @@
-use std::{fs, path::PathBuf};
+mod command;
+
+use std::fs;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use command::{Cli, Command};
 use email_sequencing_cli::{
-    Enrollment, EnrollmentEvent, EnrollmentSeed, SequenceInput, create_enrollment, next_actions,
-    normalize_sequence, parse_optional_date, plan_enrollment, record_event, render_template,
+    Enrollment, EnrollmentEvent, EnrollmentEventEntry, EnrollmentSeed, SequenceInput, create_enrollment, next_actions,
+    normalize_sequence, parse_optional_date, parse_status, plan_enrollment, record_event, render_template, report,
+    enroll_all, forecast, opt_out, outbox, preview, readiness, record_all, seeds_from_sheet, set_status, stopped,
 };
 use serde_json::{Map, Value};
 use wisent_errors::cli_output::{output, read_json};
-
-#[derive(Parser)]
-#[command(
-    name = "email-sequencing",
-    version,
-    about = "Local-first email sequence planning and execution-state CLI",
-    after_help = "Commands never send email. Every command prints JSON, or with --text one `path: value` line per field from the same data. Exit 2: the invocation is wrong; exit 1: an input could not be read or was refused."
-)]
-struct Cli {
-    /// Print one `path: value` line per field instead of JSON.
-    #[arg(long, global = true)]
-    text: bool,
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Start a contact on a sequence and print the new enrollment.
-    Enroll {
-        /// The sequence JSON file.
-        #[arg(long)]
-        sequence: PathBuf,
-        /// The enrollment seed JSON file (id and contact).
-        #[arg(long)]
-        enrollment: PathBuf,
-        /// When the enrollment starts (RFC 3339); otherwise the seed's enrolledAt, otherwise now.
-        #[arg(long)]
-        at: Option<String>,
-    },
-    /// List the steps that are due across many enrollments.
-    Plan {
-        /// The sequence JSON file.
-        #[arg(long)]
-        sequence: PathBuf,
-        /// A JSON array of enrollments.
-        #[arg(long)]
-        enrollments: PathBuf,
-        /// The moment due steps are computed for (RFC 3339); now when omitted.
-        #[arg(long)]
-        at: Option<String>,
-    },
-    /// Print every step of one enrollment with the time it falls due.
-    Schedule {
-        /// The sequence JSON file.
-        #[arg(long)]
-        sequence: PathBuf,
-        /// The enrollment JSON file.
-        #[arg(long)]
-        enrollment: PathBuf,
-    },
-    /// Add one event (sent, skipped, replied, bounced, unsubscribed) to an enrollment and print it.
-    Record {
-        /// The enrollment JSON file.
-        #[arg(long)]
-        enrollment: PathBuf,
-        /// The event JSON file.
-        #[arg(long)]
-        event: PathBuf,
-    },
-    /// Fill a template's variables and print the result.
-    Render {
-        /// The template text file.
-        #[arg(long)]
-        template: PathBuf,
-        /// A JSON object of variable values.
-        #[arg(long)]
-        variables: PathBuf,
-    },
-}
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -104,7 +38,11 @@ fn run() -> Result<()> {
         } => {
             let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
             let enrollments = read_json::<Vec<Enrollment>>(&enrollments)?;
-            let at = parse_optional_date(at.as_deref(), "--at")?.unwrap_or_else(Utc::now);
+            // `--at` names the moment; the documented moment without it is now.
+            let at = match parse_optional_date(at.as_deref(), "--at")? {
+                Some(moment) => moment,
+                None => Utc::now(),
+            };
             output(&next_actions(&sequence, enrollments, at)?, text)
         }
         Command::Schedule {
@@ -117,9 +55,22 @@ fn run() -> Result<()> {
                 read_json::<Enrollment>(&enrollment)?,
             )?, text)
         }
+        Command::Preview { sequence, enrollment } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            output(&preview(&sequence, read_json::<Enrollment>(&enrollment)?)?, text)
+        }
+        Command::Check { sequence, enrollments } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            output(&readiness(&sequence, read_json::<Vec<Enrollment>>(&enrollments)?)?, text)
+        }
+        Command::Stopped { enrollments } => output(&stopped(read_json::<Vec<Enrollment>>(&enrollments)?)?, text),
         Command::Record { enrollment, event } => output(&record_event(
             read_json::<Enrollment>(&enrollment)?,
             read_json::<EnrollmentEvent>(&event)?,
+        )?, text),
+        Command::RecordAll { enrollments, events } => output(&record_all(
+            read_json::<Vec<Enrollment>>(&enrollments)?,
+            read_json::<Vec<EnrollmentEventEntry>>(&events)?,
         )?, text),
         Command::Render {
             template,
@@ -130,12 +81,64 @@ fn run() -> Result<()> {
             let variables = read_json::<Map<String, Value>>(&variables)?;
             output(&render_template(&template, &variables)?, text)
         }
+        Command::Report { sequence, enrollments } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            output(&report(&sequence, read_json::<Vec<Enrollment>>(&enrollments)?)?, text)
+        }
+        Command::Status { enrollment, set, at, reason } => {
+            let at = match parse_optional_date(at.as_deref(), "--at")? {
+                Some(moment) => moment,
+                None => Utc::now(),
+            };
+            output(&set_status(read_json::<Enrollment>(&enrollment)?, parse_status(&set)?, at, reason)?, text)
+        }
+        Command::EnrollAll { sequence, seeds, at } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            // A `.csv` file is a contact sheet; anything else is the JSON array of seeds.
+            let seeds = match seeds.extension() {
+                Some(extension) if extension.eq_ignore_ascii_case("csv") => seeds_from_sheet(
+                    &std::fs::read_to_string(&seeds)
+                        .map_err(|error| anyhow::anyhow!("could not read {}: {error}", seeds.display()))?,
+                )?,
+                _ => read_json::<Vec<EnrollmentSeed>>(&seeds)?,
+            };
+            output(&enroll_all(&sequence, seeds, parse_optional_date(at.as_deref(), "--at")?)?, text)
+        }
+        Command::Outbox { sequence, enrollments, at } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            let enrollments = read_json::<Vec<Enrollment>>(&enrollments)?;
+            let at = match parse_optional_date(at.as_deref(), "--at")? {
+                Some(moment) => moment,
+                None => Utc::now(),
+            };
+            output(&outbox(&sequence, enrollments, at)?, text)
+        }
+        Command::Forecast { sequence, enrollments, days, at } => {
+            let sequence = normalize_sequence(read_json::<SequenceInput>(&sequence)?)?;
+            let enrollments = read_json::<Vec<Enrollment>>(&enrollments)?;
+            let at = match parse_optional_date(at.as_deref(), "--at")? {
+                Some(moment) => moment,
+                None => Utc::now(),
+            };
+            output(&forecast(&sequence, enrollments, at, days)?, text)
+        }
+        Command::OptOut { enrollments, contact, reason, at } => {
+            let enrollments = read_json::<Vec<Enrollment>>(&enrollments)?;
+            let at = match parse_optional_date(at.as_deref(), "--at")? {
+                Some(moment) => moment,
+                None => Utc::now(),
+            };
+            output(&opt_out(enrollments, &contact, at, &reason)?, text)
+        }
     }
 }
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("{error:#}");
-        std::process::exit(1);
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }
